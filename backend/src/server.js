@@ -1,6 +1,14 @@
 const express = require("express");
+const pool = require("./db");
 
 const app = express();
+pool.query("SELECT NOW()", (err, result) => {
+    if (err) {
+        console.error("Database connection failed:", err);
+    } else {
+        console.log("Database connected successfully:", result.rows[0]);
+    }
+});
 
 const PORT = 5000;
 
