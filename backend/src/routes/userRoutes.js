@@ -3,6 +3,7 @@ const bcrypt = require("bcrypt");
 const pool = require("../db");
 const router = express.Router();
 
+//Registration route
 router.post("/register", async (req, res) => {
     try {
         const { name, email, password, user_type } = req.body;
@@ -54,6 +55,60 @@ router.post("/register", async (req, res) => {
             message: "User registered successfully",
             user: newUser.rows[0]
         });
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
+//Login route
+router.post("/login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        // Check required fields
+        if (!email || !password) {
+            return res.status(400).json({
+                message: "Email and password are required"
+            });
+        }
+
+        const userResult = await pool.query(
+            "SELECT * FROM users WHERE email = $1",
+            [email]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.status(401).json({
+                message: "Invalid email or password"
+            });
+        }
+
+        const user = userResult.rows[0];
+
+        // Compare the provided password with the hashed password
+        const isMatch = await bcrypt.compare(password, user.password_hash);
+
+        if (!isMatch) {
+            return res.status(401).json({
+                message: "Invalid email or password"
+            });
+        }
+
+        res.status(200).json({
+            message: "Login successful",
+            user: {
+            id: user.id,
+            name: user.name,
+            email: user.email,
+            user_type: user.user_type,
+            role: user.role
+            }
+        });
+      
     } catch (error) {
         console.error(error);
 
