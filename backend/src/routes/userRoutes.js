@@ -1,6 +1,9 @@
 const express = require("express");
 const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
 const pool = require("../db");
+const authenticateToken = require("../middleware/authMiddleware");
+
 const router = express.Router();
 
 //Registration route
@@ -96,10 +99,23 @@ router.post("/login", async (req, res) => {
             return res.status(401).json({
                 message: "Invalid email or password"
             });
-        }
+        }    
+            // Generate JWT token
+            const token = jwt.sign(
+            {
+                id: user.id,
+                email: user.email,
+                role: user.role
+            },
+            process.env.JWT_SECRET,
+            {
+                expiresIn: "1d"
+            }
+        );
 
         res.status(200).json({
             message: "Login successful",
+            token,
             user: {
             id: user.id,
             name: user.name,
@@ -116,6 +132,14 @@ router.post("/login", async (req, res) => {
             message: "Internal server error"
         });
     }
+});
+
+// Protected profile route
+router.get("/profile", authenticateToken, (req, res) => {
+    res.status(200).json({
+        message: "Protected route accessed successfully",
+        user: req.user
+    });
 });
 
 module.exports = router;
