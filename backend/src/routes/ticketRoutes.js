@@ -151,4 +151,221 @@ router.get("/:id", authenticateToken, async (req, res) => {
         });
     }
 });
+
+// Ticket Updation
+router.put("/:id", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+        //Ticket details
+        const { title, description, category, priority, status, assigned_to } = req.body;
+        const ticketResult = await pool.query(
+            "SELECT * FROM tickets WHERE id = $1",
+            [ticketId]
+        );
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Ticket not found"
+            });
+        }
+        const ticket = ticketResult.rows[0];
+        //User credentials
+        if (req.user.role === "User" && ticket.created_by !== req.user.id) {
+            return res.status(403).json({
+                message: "You are not authorized to update this ticket"
+            });
+        }
+        if (req.user.role === "User" && ticket.status !== "Open") {
+            return res.status(403).json({
+                message: "Ticket cannot be edited once it is in progress or completed"
+            });
+        }
+        if (req.user.role === "User") {
+            if (status !== undefined || assigned_to !== undefined) {
+                return res.status(403).json({
+                    message: "Users are not authorized to update status or assignment"
+                });
+            }
+        }
+
+        //Agent credentials
+        if (req.user.role === "Agent" && ticket.assigned_to !== req.user.id) {
+            return res.status(403).json({
+                message: "You are not authorized to update this ticket"
+            });
+        }
+        if (req.user.role === "Agent") {
+            if (
+                title !== undefined ||
+                description !== undefined ||
+                priority !== undefined ||
+                assigned_to !== undefined
+            ) {
+                return res.status(403).json({
+                    message: "Agents are only authorized to update status and category"
+                });
+            }
+        }
+
+        //Admin Permissions
+        if (req.user.role === "Admin") {
+            if (
+                title !== undefined ||
+                description !== undefined
+            ) {
+                return res.status(403).json({
+                    message: "Admins are not authorized to update title or description"
+                });
+            }
+        }
+
+        //Update
+        if (
+            title === undefined &&
+            description === undefined &&
+            category === undefined &&
+            priority === undefined &&
+            status === undefined &&
+            assigned_to === undefined
+        ) {
+            return res.status(400).json({
+                message: "At least one field is required to update the ticket"
+            });
+        }
+
+        //Ticket Status
+        const validStatuses = [
+            "Open",
+            "In Progress",
+            "Resolved",
+            "Closed",
+            "Reopened"
+        ];
+
+        if (status !== undefined && !validStatuses.includes(status)) {
+            return res.status(400).json({
+                message: "Invalid status"
+            });
+        }
+
+        //Priority Validation
+        const validPriorities = [
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+        ];
+
+        if (priority !== undefined && !validPriorities.includes(priority)) {
+            return res.status(400).json({
+                message: "Invalid priority"
+            });
+        }
+
+        //Category Validation
+        const validCategories = [
+            "Network",
+            "Hardware",
+            "Software",
+            "Account",
+            "Access",
+            "Cleaning",
+            "Lost and Found"
+        ];
+
+        if (category !== undefined && !validCategories.includes(category)) {
+            return res.status(400).json({
+                message: "Invalid category"
+            });
+        }
+
+        //Validate assigned_to
+        if (assigned_to !== undefined && assigned_to !== null) {
+            const assignedUserResult = await pool.query(
+                "SELECT id, role FROM users WHERE id = $1",
+                [assigned_to]
+            );
+
+            if (assignedUserResult.rows.length === 0) {
+                return res.status(400).json({
+                    message: "Assigned user does not exist"
+                });
+            }
+
+            if (assignedUserResult.rows[0].role !== "Agent") {
+                return res.status(400).json({
+                    message: "Ticket can only be assigned to an Agent"
+                });
+            }
+        }        
+
+        const updateFields = [];
+        const values = [];
+        let parameterIndex = 1;
+
+        //Title handling
+        if (title !== undefined) {
+            updateFields.push(`title = $${parameterIndex}`);
+            values.push(title);
+            parameterIndex++;
+        }
+
+        //Description Handling
+        if (description !== undefined) {
+            updateFields.push(`description = $${parameterIndex}`);
+            values.push(description);
+            parameterIndex++;
+        }
+
+        //Category Handling
+        if (category !== undefined) {
+            updateFields.push(`category = $${parameterIndex}`);
+            values.push(category);
+            parameterIndex++;
+        }
+
+        //Priority Handling
+        if (priority !== undefined) {
+            updateFields.push(`priority = $${parameterIndex}`);
+            values.push(priority);
+            parameterIndex++;
+        }
+
+        //Status Handling
+        if (status !== undefined) {
+            updateFields.push(`status = $${parameterIndex}`);
+            values.push(status);
+            parameterIndex++;
+        }
+
+        //Assigned_to Handling
+        if (assigned_to !== undefined) {
+            updateFields.push(`assigned_to = $${parameterIndex}`);
+            values.push(assigned_to);
+            parameterIndex++;
+        }
+
+        //Updated_at Handling
+        updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+        values.push(ticketId);
+
+        //Update Ticket
+        const updatedTicketResult = await pool.query(
+            `UPDATE tickets
+            SET ${updateFields.join(", ")}
+            WHERE id = $${parameterIndex}
+            RETURNING *`,
+            values
+        );
+        res.status(200).json({
+            message: "Ticket updated successfully",
+            ticket: updatedTicketResult.rows[0]
+        });
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
 module.exports = router;
