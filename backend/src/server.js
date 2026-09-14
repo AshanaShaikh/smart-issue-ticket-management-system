@@ -1,10 +1,12 @@
 const userRoutes = require("./routes/userRoutes");
+const ticketRoutes = require("./routes/ticketRoutes");
 const express = require("express");
 const pool = require("./db");
 
 const app = express();
 app.use(express.json());
 app.use("/api/users", userRoutes);
+app.use("/api/tickets", ticketRoutes);
 pool.query("SELECT NOW()", (err, result) => {
     if (err) {
         console.error("Database connection failed:", err);
