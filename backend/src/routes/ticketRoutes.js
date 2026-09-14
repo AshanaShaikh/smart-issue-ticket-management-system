@@ -110,4 +110,45 @@ router.get("/", authenticateToken, async (req, res) => {
         });
     }
 });
+
+// Access ticket by valid userID
+router.get("/:id", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+        const ticketResult = await pool.query(
+        "SELECT * FROM tickets WHERE id = $1",
+        [ticketId]
+        );
+        //Check if ticket exists
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+            message: "Ticket not found"
+            });
+        }
+        const ticket = ticketResult.rows[0];
+        //Ticket Ownership
+
+        //User
+        if (req.user.role === "User" && ticket.created_by !== req.user.id) {
+            return res.status(403).json({
+            message: "You are not authorized to view this ticket"
+            });
+        }
+        //Agent
+        if (req.user.role === "Agent" && ticket.assigned_to !== req.user.id) {
+            return res.status(403).json({
+            message: "You are not authorized to view this ticket"
+            });
+        }
+        res.status(200).json({
+            ticket
+        });
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
 module.exports = router;
