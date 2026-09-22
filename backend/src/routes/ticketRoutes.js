@@ -368,4 +368,250 @@ router.put("/:id", authenticateToken, async (req, res) => {
         });
     }
 });
+
+//Adding New Comment
+router.post("/:id/comments", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+        const { comment } = req.body;
+
+        // Validate comment
+        if (!comment || comment.trim() === "") {
+            return res.status(400).json({
+                message: "Comment is required"
+            });
+        }
+
+        // Check if ticket exists
+        const ticketResult = await pool.query(
+            "SELECT * FROM tickets WHERE id = $1",
+            [ticketId]
+        );
+
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Ticket not found"
+            });
+        }
+
+        const ticket = ticketResult.rows[0];
+
+        // Check ticket access
+        if (
+            req.user.role === "User" &&
+            ticket.created_by !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to comment on this ticket"
+            });
+        }
+
+        if (
+            req.user.role === "Agent" &&
+            ticket.assigned_to !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to comment on this ticket"
+            });
+        }
+
+        // Insert comment
+        const commentResult = await pool.query(
+            `INSERT INTO ticket_comments
+            (ticket_id, user_id, comment)
+            VALUES ($1, $2, $3)
+            RETURNING *`,
+            [ticketId, req.user.id, comment.trim()]
+        );
+
+        res.status(201).json({
+            message: "Comment added successfully",
+            comment: commentResult.rows[0]
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
+// Get Comments
+router.get("/:id/comments", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+
+        // Check if ticket exists
+        const ticketResult = await pool.query(
+            "SELECT * FROM tickets WHERE id = $1",
+            [ticketId]
+        );
+
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Ticket not found"
+            });
+        }
+
+        const ticket = ticketResult.rows[0];
+
+        // Check ticket access
+        if (
+            req.user.role === "User" &&
+            ticket.created_by !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to view comments on this ticket"
+            });
+        }
+
+        if (
+            req.user.role === "Agent" &&
+            ticket.assigned_to !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to view comments on this ticket"
+            });
+        }
+
+        // Get comments
+        const commentResult = await pool.query(
+            `SELECT id, ticket_id, user_id, comment, created_at, updated_at
+            FROM ticket_comments
+            WHERE ticket_id = $1
+            AND deleted_at IS NULL
+            ORDER BY created_at ASC`,
+            [ticketId]
+        );
+
+        res.status(200).json({
+            ticket_id: ticketId,
+            comments: commentResult.rows
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
+// Edit Comment
+router.put("/comments/:id", authenticateToken, async (req, res) => {
+    try {
+        const commentId = req.params.id;
+        const { comment } = req.body;
+
+        if (!comment || comment.trim() === "") {
+            return res.status(400).json({
+                message: "Comment is required"
+            });
+        }
+
+        const commentResult = await pool.query(
+            `SELECT * FROM ticket_comments
+            WHERE id = $1`,
+            [commentId]
+        );
+
+        if (commentResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Comment not found"
+            });
+        }
+
+        const existingComment = commentResult.rows[0];
+
+        if (existingComment.deleted_at !== null) {
+            return res.status(400).json({
+                message: "Deleted comments cannot be edited"
+            });
+        }
+
+        if (existingComment.user_id !== req.user.id) {
+            return res.status(403).json({
+                message: "You are not authorized to edit this comment"
+            });
+        }
+
+        const updatedCommentResult = await pool.query(
+            `UPDATE ticket_comments
+            SET comment = $1,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = $2
+            RETURNING *`,
+            [comment.trim(), commentId]
+        );
+
+        res.status(200).json({
+            message: "Comment updated successfully",
+            comment: updatedCommentResult.rows[0]
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
+// Delete Comment
+router.delete("/comments/:id", authenticateToken, async (req, res) => {
+    try {
+        const commentId = req.params.id;
+
+        const commentResult = await pool.query(
+            `SELECT * FROM ticket_comments
+            WHERE id = $1`,
+            [commentId]
+        );
+
+        if (commentResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Comment not found"
+            });
+        }
+
+        const existingComment = commentResult.rows[0];
+
+        if (existingComment.deleted_at !== null) {
+            return res.status(400).json({
+                message: "Comment is already deleted"
+            });
+        }
+
+        if (existingComment.user_id !== req.user.id) {
+            return res.status(403).json({
+                message: "You are not authorized to delete this comment"
+            });
+        }
+
+        const deletedCommentResult = await pool.query(
+            `UPDATE ticket_comments
+            SET deleted_at = CURRENT_TIMESTAMP
+            WHERE id = $1
+            RETURNING *`,
+            [commentId]
+        );
+
+        res.status(200).json({
+            message: "Comment deleted successfully",
+            comment: deletedCommentResult.rows[0]
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
 module.exports = router;
