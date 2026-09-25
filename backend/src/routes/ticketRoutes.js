@@ -748,4 +748,166 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
     }
 });
 
+// Create AI Analysis for a ticket (Mock)
+router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+
+        // Check if ticket exists
+        const ticketResult = await pool.query(
+            "SELECT * FROM tickets WHERE id = $1",
+            [ticketId]
+        );
+
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Ticket not found"
+            });
+        }
+
+        const ticket = ticketResult.rows[0];
+
+        // Check ticket access
+        if (
+            req.user.role === "User" &&
+            ticket.created_by !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to analyze this ticket"
+            });
+        }
+
+        if (
+            req.user.role === "Agent" &&
+            ticket.assigned_to !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to analyze this ticket"
+            });
+        }
+
+        if (
+            req.user.role !== "Admin" &&
+            req.user.role !== "Agent" &&
+            req.user.role !== "User"
+        ) {
+            return res.status(403).json({
+                message: "Access denied"
+            });
+        }
+
+        // Mock / Temporary AI Analysis logic
+        let suggested_priority = "Medium";
+        let confidence_score = 0.85;
+        let analysis = "Automated preliminary analysis: Issue classified as Medium priority based on ticket description and category.";
+
+        const content = `${ticket.title || ""} ${ticket.description || ""}`.toLowerCase();
+        if (content.includes("critical") || content.includes("crash") || content.includes("urgent") || content.includes("outage")) {
+            suggested_priority = "Critical";
+            confidence_score = 0.95;
+            analysis = "Mock AI Analysis: Critical keywords detected in ticket content. High urgency suggested.";
+        } else if (content.includes("error") || content.includes("fail") || content.includes("bug")) {
+            suggested_priority = "High";
+            confidence_score = 0.88;
+            analysis = "Mock AI Analysis: Error/failure patterns detected. Prompt resolution recommended.";
+        } else if (content.includes("help") || content.includes("inquiry") || content.includes("request")) {
+            suggested_priority = "Low";
+            confidence_score = 0.80;
+            analysis = "Mock AI Analysis: Standard inquiry or service request detected. Low urgency suggested.";
+        }
+
+        // Insert AI analysis without modifying tickets.priority
+        const insertResult = await pool.query(
+            `INSERT INTO ai_analysis
+            (ticket_id, suggested_priority, confidence_score, analysis)
+            VALUES ($1, $2, $3, $4)
+            RETURNING id, ticket_id, suggested_priority, confidence_score, analysis, created_at`,
+            [ticketId, suggested_priority, confidence_score, analysis]
+        );
+
+        res.status(201).json({
+            message: "AI analysis created successfully",
+            analysis: insertResult.rows[0]
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
+// Get AI Analyses for a ticket
+router.get("/:id/ai-analysis", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+
+        // Check if ticket exists
+        const ticketResult = await pool.query(
+            "SELECT * FROM tickets WHERE id = $1",
+            [ticketId]
+        );
+
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Ticket not found"
+            });
+        }
+
+        const ticket = ticketResult.rows[0];
+
+        // Check ticket access
+        if (
+            req.user.role === "User" &&
+            ticket.created_by !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to view AI analysis for this ticket"
+            });
+        }
+
+        if (
+            req.user.role === "Agent" &&
+            ticket.assigned_to !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to view AI analysis for this ticket"
+            });
+        }
+
+        if (
+            req.user.role !== "Admin" &&
+            req.user.role !== "Agent" &&
+            req.user.role !== "User"
+        ) {
+            return res.status(403).json({
+                message: "Access denied"
+            });
+        }
+
+        // Query all AI analyses for the ticket ordered by created_at DESC
+        const analysisResult = await pool.query(
+            `SELECT id, ticket_id, suggested_priority, confidence_score, analysis, created_at
+            FROM ai_analysis
+            WHERE ticket_id = $1
+            ORDER BY created_at DESC`,
+            [ticketId]
+        );
+
+        res.status(200).json({
+            ticket_id: ticketId,
+            analyses: analysisResult.rows
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
 module.exports = router;
