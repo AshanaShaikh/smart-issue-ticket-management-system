@@ -677,4 +677,75 @@ router.delete("/comments/:id", authenticateToken, async (req, res) => {
     }
 });
 
+// Get Ticket History
+router.get("/:id/history", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+
+        // Check if ticket exists
+        const ticketResult = await pool.query(
+            "SELECT * FROM tickets WHERE id = $1",
+            [ticketId]
+        );
+
+        if (ticketResult.rows.length === 0) {
+            return res.status(404).json({
+                message: "Ticket not found"
+            });
+        }
+
+        const ticket = ticketResult.rows[0];
+
+        // Check ticket access
+        if (
+            req.user.role === "User" &&
+            ticket.created_by !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to view history for this ticket"
+            });
+        }
+
+        if (
+            req.user.role === "Agent" &&
+            ticket.assigned_to !== req.user.id
+        ) {
+            return res.status(403).json({
+                message: "You are not authorized to view history for this ticket"
+            });
+        }
+
+        if (
+            req.user.role !== "Admin" &&
+            req.user.role !== "Agent" &&
+            req.user.role !== "User"
+        ) {
+            return res.status(403).json({
+                message: "Access denied"
+            });
+        }
+
+        // Query ticket history
+        const historyResult = await pool.query(
+            `SELECT id, ticket_id, field_changed, old_value, new_value, changed_by, changed_at
+            FROM ticket_history
+            WHERE ticket_id = $1
+            ORDER BY changed_at ASC`,
+            [ticketId]
+        );
+
+        res.status(200).json({
+            ticket_id: ticketId,
+            history: historyResult.rows
+        });
+
+    } catch (error) {
+        console.error(error);
+
+        res.status(500).json({
+            message: "Internal server error"
+        });
+    }
+});
+
 module.exports = router;
