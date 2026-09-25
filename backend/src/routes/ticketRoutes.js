@@ -301,9 +301,17 @@ router.put("/:id", authenticateToken, async (req, res) => {
         const updateFields = [];
         const values = [];
         let parameterIndex = 1;
+        const historyChanges = [];
 
         //Title handling
         if (title !== undefined) {
+            if (title !== ticket.title) {
+                historyChanges.push({
+                    field: "title",
+                    oldValue: ticket.title,
+                    newValue: title
+                });
+            }
             updateFields.push(`title = $${parameterIndex}`);
             values.push(title);
             parameterIndex++;
@@ -311,6 +319,13 @@ router.put("/:id", authenticateToken, async (req, res) => {
 
         //Description Handling
         if (description !== undefined) {
+            if (description !== ticket.description) {
+                historyChanges.push({
+                    field: "description",
+                    oldValue: ticket.description,
+                    newValue: description
+                });
+            }
             updateFields.push(`description = $${parameterIndex}`);
             values.push(description);
             parameterIndex++;
@@ -318,6 +333,13 @@ router.put("/:id", authenticateToken, async (req, res) => {
 
         //Category Handling
         if (category !== undefined) {
+            if (category !== ticket.category) {
+                historyChanges.push({
+                    field: "category",
+                    oldValue: ticket.category,
+                    newValue: category
+                });
+            }
             updateFields.push(`category = $${parameterIndex}`);
             values.push(category);
             parameterIndex++;
@@ -325,6 +347,13 @@ router.put("/:id", authenticateToken, async (req, res) => {
 
         //Priority Handling
         if (priority !== undefined) {
+            if (priority !== ticket.priority) {
+                historyChanges.push({
+                    field: "priority",
+                    oldValue: ticket.priority,
+                    newValue: priority
+                });
+            }
             updateFields.push(`priority = $${parameterIndex}`);
             values.push(priority);
             parameterIndex++;
@@ -332,6 +361,13 @@ router.put("/:id", authenticateToken, async (req, res) => {
 
         //Status Handling
         if (status !== undefined) {
+            if (status !== ticket.status) {
+                historyChanges.push({
+                    field: "status",
+                    oldValue: ticket.status,
+                    newValue: status
+                });
+            }
             updateFields.push(`status = $${parameterIndex}`);
             values.push(status);
             parameterIndex++;
@@ -339,6 +375,16 @@ router.put("/:id", authenticateToken, async (req, res) => {
 
         //Assigned_to Handling
         if (assigned_to !== undefined) {
+            const currentAssigned = ticket.assigned_to !== null && ticket.assigned_to !== undefined ? String(ticket.assigned_to) : null;
+            const newAssigned = assigned_to !== null && assigned_to !== undefined ? String(assigned_to) : null;
+
+            if (currentAssigned !== newAssigned) {
+                historyChanges.push({
+                    field: "assigned_to",
+                    oldValue: ticket.assigned_to,
+                    newValue: assigned_to
+                });
+            }
             updateFields.push(`assigned_to = $${parameterIndex}`);
             values.push(assigned_to);
             parameterIndex++;
@@ -356,6 +402,23 @@ router.put("/:id", authenticateToken, async (req, res) => {
             RETURNING *`,
             values
         );
+
+        // Record Ticket History
+        for (const change of historyChanges) {
+            await pool.query(
+                `INSERT INTO ticket_history
+                (ticket_id, field_changed, old_value, new_value, changed_by)
+                VALUES ($1, $2, $3, $4, $5)`,
+                [
+                    ticketId,
+                    change.field,
+                    change.oldValue !== null && change.oldValue !== undefined ? String(change.oldValue) : null,
+                    change.newValue !== null && change.newValue !== undefined ? String(change.newValue) : null,
+                    req.user.id
+                ]
+            );
+        }
+
         res.status(200).json({
             message: "Ticket updated successfully",
             ticket: updatedTicketResult.rows[0]
