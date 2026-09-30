@@ -1,6 +1,11 @@
 const express = require("express");
 const pool = require("../db");
 const authenticateToken = require("../middleware/authMiddleware");
+const { GoogleGenAI } = require("@google/genai");
+
+const ai = new GoogleGenAI({
+    apiKey: process.env.GEMINI_API_KEY
+});
 
 const router = express.Router();
 // Create a new ticket
@@ -748,7 +753,7 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
     }
 });
 
-// Create AI Analysis for a ticket (Mock)
+// Create AI Analysis for a ticket (Gemini AI)
 router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
     try {
         const ticketId = req.params.id;
@@ -796,25 +801,87 @@ router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
             });
         }
 
-        // Mock / Temporary AI Analysis logic
-        let suggested_priority = "Medium";
-        let confidence_score = 0.85;
-        let analysis = "Automated preliminary analysis: Issue classified as Medium priority based on ticket description and category.";
+        // Real AI Analysis using Gemini
+        const prompt = `
+        You are an AI assistant for a college issue ticket management system.
+        Analyze the following support ticket and suggest its priority.
 
-        const content = `${ticket.title || ""} ${ticket.description || ""}`.toLowerCase();
-        if (content.includes("critical") || content.includes("crash") || content.includes("urgent") || content.includes("outage")) {
-            suggested_priority = "Critical";
-            confidence_score = 0.95;
-            analysis = "Mock AI Analysis: Critical keywords detected in ticket content. High urgency suggested.";
-        } else if (content.includes("error") || content.includes("fail") || content.includes("bug")) {
-            suggested_priority = "High";
-            confidence_score = 0.88;
-            analysis = "Mock AI Analysis: Error/failure patterns detected. Prompt resolution recommended.";
-        } else if (content.includes("help") || content.includes("inquiry") || content.includes("request")) {
-            suggested_priority = "Low";
-            confidence_score = 0.80;
-            analysis = "Mock AI Analysis: Standard inquiry or service request detected. Low urgency suggested.";
+        Ticket title:
+        ${ticket.title}
+
+        Ticket description:
+        ${ticket.description}
+
+        Ticket category:
+        ${ticket.category}
+
+        Priority must be exactly one of:
+        Low, Medium, High, Critical.
+
+        Return:
+        - suggested_priority
+        - confidence_score between 0 and 1
+        - short explanation for the suggested priority
+        `;
+
+        const aiResponse = await ai.interactions.create({
+            model: "gemini-3.8-flash",
+            input: prompt,
+
+            response_format: {
+                type: "text",
+                mime_type: "application/json",
+                schema: {
+                    type: "object",
+                    properties: {
+                        suggested_priority: {
+                            type: "string",
+                            enum: ["Low", "Medium", "High", "Critical"]
+                        },
+                        confidence_score: {
+                            type: "number"
+                        },
+                        analysis: {
+                            type: "string"
+                        }
+                    },
+                    required: [
+                        "suggested_priority",
+                        "confidence_score",
+                        "analysis"
+                    ]
+                }
+            }
+        });
+
+        const aiResult = JSON.parse(aiResponse.output_text);
+
+        const validPriorities = [
+            "Low",
+            "Medium",
+            "High",
+            "Critical"
+        ];
+
+        if (!validPriorities.includes(aiResult.suggested_priority)) {
+            return res.status(500).json({
+                message: "AI returned an invalid priority"
+            });
         }
+
+        if (
+            typeof aiResult.confidence_score !== "number" ||
+            aiResult.confidence_score < 0 ||
+            aiResult.confidence_score > 1
+        ) {
+            return res.status(500).json({
+                message: "AI returned an invalid confidence score"
+            });
+        }
+
+        const suggested_priority = aiResult.suggested_priority;
+        const confidence_score = aiResult.confidence_score;
+        const analysis = aiResult.analysis;
 
         // Insert AI analysis without modifying tickets.priority
         const insertResult = await pool.query(
