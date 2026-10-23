@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import authService from "../services/authService";
 import { useAuth } from "../context/AuthContext";
 
@@ -12,6 +12,10 @@ function LoginPage() {
 
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
+
+  // Populated when redirected from RegisterPage after successful registration.
+  const successMessage = location.state?.successMessage || '';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -44,6 +48,10 @@ function LoginPage() {
 
   return (
     <div>
+
+      {successMessage && (
+        <p>{successMessage}</p>
+      )}
       <h1>Login</h1>
 
       <form onSubmit={handleSubmit}>
