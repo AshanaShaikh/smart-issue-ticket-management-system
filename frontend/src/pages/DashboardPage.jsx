@@ -3,12 +3,16 @@
 // search/filter controls, and ticket table linking to /tickets/:id.
 
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import ticketService from "../services/ticketService";
 import { useAuth } from "../context/AuthContext";
 
 function DashboardPage() {
   const { user } = useAuth();
+  const location = useLocation();
+
+  // Success message when redirected back from CreateTicketPage
+  const successMessage = location.state?.successMessage || "";
 
   const [tickets, setTickets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -186,8 +190,31 @@ function DashboardPage() {
             </svg>
             <span>{loading ? "Refreshing..." : "Refresh"}</span>
           </button>
+
+          <Link
+            to="/tickets/new"
+            className="btn btn-primary btn-sm"
+            aria-label="Create a new support ticket"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19" />
+              <line x1="5" y1="12" x2="19" y2="12" />
+            </svg>
+            <span>New Ticket</span>
+          </Link>
         </div>
       </section>
+
+      {/* Success banner when redirected back after ticket creation */}
+      {successMessage && (
+        <div className="alert alert-success" role="status">
+          <svg className="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+            <polyline points="22 4 12 14.01 9 11.01" />
+          </svg>
+          <div>{successMessage}</div>
+        </div>
+      )}
 
       {/* Summary Metrics Cards */}
       <section className="metrics-grid" aria-label="Ticket statistics">

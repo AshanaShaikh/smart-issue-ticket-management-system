@@ -722,3 +722,113 @@
     padding: 1.75rem 1.25rem;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Create Ticket Page
+   -------------------------------------------------------------------------- */
+.create-ticket-card {
+  background-color: #ffffff;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+  padding: 2rem 2.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.create-ticket-form {
+  display: flex;
+  flex-direction: column;
+  gap: 1.375rem;
+}
+
+/* Textarea — extends the base .form-input style */
+.form-textarea {
+  resize: vertical;
+  min-height: 140px;
+  font-family: inherit;
+  line-height: 1.55;
+}
+
+/* Character hint below title input */
+.create-ticket-char-hint {
+  font-size: 0.75rem;
+  color: var(--navy-400);
+  text-align: right;
+  margin-top: 0.2rem;
+  display: block;
+}
+
+/* Inline required star */
+.create-ticket-required {
+  color: var(--rose-600);
+  margin-left: 0.2rem;
+}
+
+/* Category + Priority side-by-side */
+.create-ticket-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+.create-ticket-field-category,
+.create-ticket-field-priority {
+  min-width: 0;
+}
+
+/* Informational note under the fields */
+.create-ticket-note {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--navy-500);
+  background-color: var(--navy-50);
+  border: 1px solid var(--navy-200);
+  border-radius: var(--radius-sm);
+  padding: 0.625rem 0.875rem;
+}
+
+/* Form action buttons row */
+.create-ticket-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--navy-100);
+}
+
+/* Spinner icon animation on submit button */
+@keyframes spinIcon {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.create-ticket-spinner {
+  animation: spinIcon 1s linear infinite;
+}
+
+/* Responsive: stack category + priority on small screens */
+@media (max-width: 640px) {
+  .create-ticket-card {
+    padding: 1.25rem 1rem;
+  }
+
+  .create-ticket-row {
+    grid-template-columns: 1fr;
+  }
+
+  .create-ticket-actions {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .create-ticket-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+

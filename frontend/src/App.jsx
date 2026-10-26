@@ -8,6 +8,7 @@ import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
+import CreateTicketPage from "./pages/CreateTicketPage";
 
 function App() {
   return (
@@ -26,6 +27,14 @@ function App() {
               element={
                 <PrivateRoute>
                   <DashboardPage />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/tickets/new"
+              element={
+                <PrivateRoute>
+                  <CreateTicketPage />
                 </PrivateRoute>
               }
             />
