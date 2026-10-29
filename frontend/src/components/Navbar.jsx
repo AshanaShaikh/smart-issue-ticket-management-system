@@ -43,6 +43,24 @@ function Navbar() {
           </div>
         </Link>
 
+        {/* Navigation links for authenticated pages */}
+        <nav className="navbar-nav-links">
+          <Link
+            to="/dashboard"
+            className={`navbar-nav-link${location.pathname === '/dashboard' || location.pathname.startsWith('/tickets') ? ' navbar-nav-link-active' : ''}`}
+          >
+            Dashboard
+          </Link>
+          {user.role === 'Admin' && (
+            <Link
+              to="/admin/users"
+              className={`navbar-nav-link${location.pathname === '/admin/users' ? ' navbar-nav-link-active' : ''}`}
+            >
+              User Management
+            </Link>
+          )}
+        </nav>
+
         <div className="navbar-actions">
           <div className="navbar-user-card" title={`Logged in as ${user.email || user.name}`}>
             <div className="user-avatar-circle">

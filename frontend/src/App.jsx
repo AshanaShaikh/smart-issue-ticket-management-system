@@ -9,6 +9,7 @@ import RegisterPage from "./pages/RegisterPage";
 import DashboardPage from "./pages/DashboardPage";
 import TicketDetailPage from "./pages/TicketDetailPage";
 import CreateTicketPage from "./pages/CreateTicketPage";
+import UserManagementPage from "./pages/UserManagementPage";
 
 function App() {
   return (
@@ -43,6 +44,14 @@ function App() {
               element={
                 <PrivateRoute>
                   <TicketDetailPage />
+                </PrivateRoute>
+              }
+            />
+            <Route
+              path="/admin/users"
+              element={
+                <PrivateRoute allowedRoles={["Admin"]}>
+                  <UserManagementPage />
                 </PrivateRoute>
               }
             />

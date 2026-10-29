@@ -18,6 +18,8 @@ function RegisterPage() {
 
   const navigate = useNavigate();
 
+  const ALLOWED_USER_TYPES = ["Student", "Faculty", "Staff"];
+
   // Client-side validation — mirrors backend rules for instant feedback.
   const validate = () => {
     if (!name.trim())         return "Name is required.";
@@ -25,7 +27,9 @@ function RegisterPage() {
     if (!email.includes("@")) return "Please enter a valid email address.";
     if (!password)            return "Password is required.";
     if (password.length < 6)  return "Password must be at least 6 characters.";
-    if (!userType)            return "Please select an account type.";
+    if (!userType || !ALLOWED_USER_TYPES.includes(userType)) {
+      return "Please select a valid affiliation (Student, Faculty, or Staff).";
+    }
     return null;
   };
 
@@ -126,7 +130,7 @@ function RegisterPage() {
 
           <div className="form-group">
             <label htmlFor="register-user-type" className="form-label">
-              Affiliation / Account Type
+              Academic Affiliation / User Category
             </label>
             <select
               id="register-user-type"
@@ -135,11 +139,14 @@ function RegisterPage() {
               onChange={(e) => setUserType(e.target.value)}
               required
             >
-              <option value="" disabled>Select account type</option>
+              <option value="" disabled>Select your affiliation (Student, Faculty, Staff)</option>
               <option value="Student">Student</option>
               <option value="Faculty">Faculty</option>
               <option value="Staff">Staff</option>
             </select>
+            <span style={{ fontSize: "0.75rem", color: "var(--navy-500)", marginTop: "0.2rem", display: "block" }}>
+              Public registration creates standard User accounts. IT Agents and Admins are provisioned by system administration.
+            </span>
           </div>
 
           <div className="form-group">
