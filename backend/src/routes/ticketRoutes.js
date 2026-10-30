@@ -755,14 +755,18 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
 
 // Create AI Analysis for a ticket (Gemini AI)
 router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
+    const totalLabel = `[AI Analysis] total (ticket ${req.params.id})`;
+    console.time(totalLabel);
     try {
         const ticketId = req.params.id;
 
-        // Check if ticket exists
+        // Fetch only the columns needed for auth check + prompt
+        console.time(`[AI Analysis] db-read`);
         const ticketResult = await pool.query(
-            "SELECT * FROM tickets WHERE id = $1",
+            "SELECT id, title, description, category, created_by, assigned_to FROM tickets WHERE id = $1",
             [ticketId]
         );
+        console.timeEnd(`[AI Analysis] db-read`);
 
         if (ticketResult.rows.length === 0) {
             return res.status(404).json({
@@ -801,58 +805,50 @@ router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
             });
         }
 
+        // Concise prompt — fewer tokens = faster response
+        const prompt = `Classify this college IT ticket's priority.\nTitle: ${ticket.title}\nDescription: ${ticket.description}\nCategory: ${ticket.category}\nRespond with suggested_priority (Low/Medium/High/Critical), confidence_score (0-1), and analysis (1-2 sentences).`;
+
+        // 30-second timeout so the user isn't left waiting indefinitely
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 30000);
+
         // Real AI Analysis using Gemini
-        const prompt = `
-        You are an AI assistant for a college issue ticket management system.
-        Analyze the following support ticket and suggest its priority.
+        console.time(`[AI Analysis] gemini-api`);
+        let aiResponse;
+        try {
+            aiResponse = await ai.interactions.create({
+                model: "gemini-3.8-flash",
+                input: prompt,
 
-        Ticket title:
-        ${ticket.title}
-
-        Ticket description:
-        ${ticket.description}
-
-        Ticket category:
-        ${ticket.category}
-
-        Priority must be exactly one of:
-        Low, Medium, High, Critical.
-
-        Return:
-        - suggested_priority
-        - confidence_score between 0 and 1
-        - short explanation for the suggested priority
-        `;
-
-        const aiResponse = await ai.interactions.create({
-            model: "gemini-3.8-flash",
-            input: prompt,
-
-            response_format: {
-                type: "text",
-                mime_type: "application/json",
-                schema: {
-                    type: "object",
-                    properties: {
-                        suggested_priority: {
-                            type: "string",
-                            enum: ["Low", "Medium", "High", "Critical"]
+                response_format: {
+                    type: "text",
+                    mime_type: "application/json",
+                    schema: {
+                        type: "object",
+                        properties: {
+                            suggested_priority: {
+                                type: "string",
+                                enum: ["Low", "Medium", "High", "Critical"]
+                            },
+                            confidence_score: {
+                                type: "number"
+                            },
+                            analysis: {
+                                type: "string"
+                            }
                         },
-                        confidence_score: {
-                            type: "number"
-                        },
-                        analysis: {
-                            type: "string"
-                        }
-                    },
-                    required: [
-                        "suggested_priority",
-                        "confidence_score",
-                        "analysis"
-                    ]
+                        required: [
+                            "suggested_priority",
+                            "confidence_score",
+                            "analysis"
+                        ]
+                    }
                 }
-            }
-        });
+            }, { signal: controller.signal });
+        } finally {
+            clearTimeout(timeout);
+        }
+        console.timeEnd(`[AI Analysis] gemini-api`);
 
         const aiResult = JSON.parse(aiResponse.output_text);
 
@@ -884,6 +880,7 @@ router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
         const analysis = aiResult.analysis;
 
         // Insert AI analysis without modifying tickets.priority
+        console.time(`[AI Analysis] db-write`);
         const insertResult = await pool.query(
             `INSERT INTO ai_analysis
             (ticket_id, suggested_priority, confidence_score, analysis)
@@ -891,14 +888,26 @@ router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
             RETURNING id, ticket_id, suggested_priority, confidence_score, analysis, created_at`,
             [ticketId, suggested_priority, confidence_score, analysis]
         );
+        console.timeEnd(`[AI Analysis] db-write`);
 
+        console.timeEnd(totalLabel);
         res.status(201).json({
             message: "AI analysis created successfully",
             analysis: insertResult.rows[0]
         });
 
     } catch (error) {
-        console.error(error);
+        console.timeEnd(totalLabel);
+
+        // Distinguish timeout from other errors
+        if (error.name === "AbortError" || error.message?.toLowerCase().includes("abort")) {
+            console.error("[AI Analysis] Gemini API timed out after 30s");
+            return res.status(504).json({
+                message: "AI analysis timed out. The Gemini API is currently slow — please try again shortly."
+            });
+        }
+
+        console.error("[AI Analysis] Error:", error.message || error);
 
         res.status(500).json({
             message: "Internal server error"
@@ -911,9 +920,9 @@ router.get("/:id/ai-analysis", authenticateToken, async (req, res) => {
     try {
         const ticketId = req.params.id;
 
-        // Check if ticket exists
+        // Check if ticket exists — only need auth columns
         const ticketResult = await pool.query(
-            "SELECT * FROM tickets WHERE id = $1",
+            "SELECT id, created_by, assigned_to FROM tickets WHERE id = $1",
             [ticketId]
         );
 
