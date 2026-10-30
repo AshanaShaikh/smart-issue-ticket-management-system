@@ -35,10 +35,26 @@ const ticketService = {
   getHistory: (id) => api.get(`/tickets/${id}/history`),
 
   // --- AI Analysis ---
-  /** POST /api/tickets/:id/ai-analysis */
-  runAiAnalysis: (id) => api.post(`/tickets/${id}/ai-analysis`),
+  /**
+   * POST /api/tickets/:id/ai-analysis
+   * Submits an analysis job (or returns cached result).
+   * Response:
+   *   cached=true  → { cached: true, analysis: {...} }   (HTTP 200, instant)
+   *   cached=false → { cached: false, job_id, status }   (HTTP 202, async)
+   */
+  submitAiAnalysis: (id) => api.post(`/tickets/${id}/ai-analysis`),
 
-  /** GET /api/tickets/:id/ai-analysis */
+  /**
+   * GET /api/tickets/:id/ai-analysis/jobs/:jobId
+   * Polls a single job's status.
+   * Response: { job_id, status, analysis?, error? }
+   */
+  pollAiJob: (id, jobId) => api.get(`/tickets/${id}/ai-analysis/jobs/${jobId}`),
+
+  /**
+   * GET /api/tickets/:id/ai-analysis
+   * Returns all saved analyses (newest first), including is_cached flag.
+   */
   getAiAnalyses: (id) => api.get(`/tickets/${id}/ai-analysis`),
 };
 

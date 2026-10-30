@@ -3,6 +3,7 @@ const ticketRoutes = require("./routes/ticketRoutes");
 const express = require("express");
 const cors = require("cors");
 const pool = require("./db");
+const worker = require("./aiAnalysisWorker");
 
 const app = express();
 app.use(cors());
@@ -32,4 +33,8 @@ app.get("/", (req, res) => {
 // Start server
 app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
-});
+    // Start the background AI analysis worker after the server is listening.
+    // NOTE: Restarting the server will interrupt any in-flight Gemini calls.
+    // Jobs are recovered to 'pending' state on startup so they are retried automatically.
+    worker.start();
+});

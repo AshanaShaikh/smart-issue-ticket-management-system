@@ -1,11 +1,7 @@
 const express = require("express");
 const pool = require("../db");
 const authenticateToken = require("../middleware/authMiddleware");
-const { GoogleGenAI } = require("@google/genai");
-
-const ai = new GoogleGenAI({
-    apiKey: process.env.GEMINI_API_KEY
-});
+const { computeContentHash } = require("../aiAnalysisWorker");
 
 const router = express.Router();
 // Create a new ticket
@@ -185,9 +181,9 @@ router.put("/:id", authenticateToken, async (req, res) => {
             });
         }
         if (req.user.role === "User") {
-            if (status !== undefined || assigned_to !== undefined) {
+            if (status !== undefined || assigned_to !== undefined || priority !== undefined) {
                 return res.status(403).json({
-                    message: "Users are not authorized to update status or assignment"
+                    message: "Users are not authorized to update status, priority, or assignment"
                 });
             }
         }
@@ -753,237 +749,227 @@ router.get("/:id/history", authenticateToken, async (req, res) => {
     }
 });
 
-// Create AI Analysis for a ticket (Gemini AI)
+// ─── Helper: verify ticket access ────────────────────────────────────────────
+async function checkTicketAccess(ticketId, user) {
+    const r = await pool.query(
+        "SELECT id, title, description, category, created_by, assigned_to FROM tickets WHERE id=$1",
+        [ticketId]
+    );
+    if (r.rows.length === 0) return { error: 404, message: "Ticket not found" };
+    const ticket = r.rows[0];
+
+    if (user.role === "User" && ticket.created_by !== user.id) {
+        return { error: 403, message: "You are not authorized to analyze this ticket" };
+    }
+    if (user.role === "Agent" && ticket.assigned_to !== user.id) {
+        return { error: 403, message: "You are not authorized to analyze this ticket" };
+    }
+    if (!["Admin", "Agent", "User"].includes(user.role)) {
+        return { error: 403, message: "Access denied" };
+    }
+    return { ticket };
+}
+
+// ─── POST /:id/ai-analysis ───────────────────────────────────────────────────
+// Submit an analysis job. Returns immediately with a job ID.
+// If a cached result exists for unchanged ticket content, returns it instantly.
+// Prevents duplicate jobs for the same ticket+content_hash.
 router.post("/:id/ai-analysis", authenticateToken, async (req, res) => {
-    const totalLabel = `[AI Analysis] total (ticket ${req.params.id})`;
-    console.time(totalLabel);
     try {
         const ticketId = req.params.id;
 
-        // Fetch only the columns needed for auth check + prompt
-        console.time(`[AI Analysis] db-read`);
-        const ticketResult = await pool.query(
-            "SELECT id, title, description, category, created_by, assigned_to FROM tickets WHERE id = $1",
-            [ticketId]
+        // Access check — also retrieves current ticket content for hashing
+        const access = await checkTicketAccess(ticketId, req.user);
+        if (access.error) {
+            return res.status(access.error).json({ message: access.message });
+        }
+        const { ticket } = access;
+
+        // Compute content fingerprint from ticket fields that affect the AI prompt
+        const contentHash = computeContentHash(ticket.title, ticket.description, ticket.category);
+
+        // ── Phase 1: Cache hit check ────────────────────────────────────────
+        // Return existing analysis instantly if ticket content hasn't changed.
+        const cachedRes = await pool.query(
+            `SELECT id, ticket_id, suggested_priority, confidence_score, analysis, content_hash, is_cached, created_at
+             FROM ai_analysis
+             WHERE ticket_id=$1 AND content_hash=$2
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [ticketId, contentHash]
         );
-        console.timeEnd(`[AI Analysis] db-read`);
 
-        if (ticketResult.rows.length === 0) {
-            return res.status(404).json({
-                message: "Ticket not found"
+        if (cachedRes.rows.length > 0) {
+            // Mark this record as served from cache (update is_cached flag)
+            await pool.query(
+                "UPDATE ai_analysis SET is_cached=TRUE WHERE id=$1",
+                [cachedRes.rows[0].id]
+            );
+            const cached = { ...cachedRes.rows[0], is_cached: true };
+            console.log(`[AI Cache] HIT for ticket ${ticketId} (hash ${contentHash.slice(0, 8)}…)`);
+            return res.status(200).json({
+                message: "Cached analysis returned (ticket content unchanged)",
+                cached: true,
+                analysis: cached,
             });
         }
 
-        const ticket = ticketResult.rows[0];
-
-        // Check ticket access
-        if (
-            req.user.role === "User" &&
-            ticket.created_by !== req.user.id
-        ) {
-            return res.status(403).json({
-                message: "You are not authorized to analyze this ticket"
-            });
-        }
-
-        if (
-            req.user.role === "Agent" &&
-            ticket.assigned_to !== req.user.id
-        ) {
-            return res.status(403).json({
-                message: "You are not authorized to analyze this ticket"
-            });
-        }
-
-        if (
-            req.user.role !== "Admin" &&
-            req.user.role !== "Agent" &&
-            req.user.role !== "User"
-        ) {
-            return res.status(403).json({
-                message: "Access denied"
-            });
-        }
-
-        // Concise prompt — fewer tokens = faster response
-        const prompt = `Classify this college IT ticket's priority.\nTitle: ${ticket.title}\nDescription: ${ticket.description}\nCategory: ${ticket.category}\nRespond with suggested_priority (Low/Medium/High/Critical), confidence_score (0-1), and analysis (1-2 sentences).`;
-
-        // 30-second timeout so the user isn't left waiting indefinitely
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 30000);
-
-        // Real AI Analysis using Gemini
-        console.time(`[AI Analysis] gemini-api`);
-        let aiResponse;
-        try {
-            aiResponse = await ai.interactions.create({
-                model: "gemini-3.8-flash",
-                input: prompt,
-
-                response_format: {
-                    type: "text",
-                    mime_type: "application/json",
-                    schema: {
-                        type: "object",
-                        properties: {
-                            suggested_priority: {
-                                type: "string",
-                                enum: ["Low", "Medium", "High", "Critical"]
-                            },
-                            confidence_score: {
-                                type: "number"
-                            },
-                            analysis: {
-                                type: "string"
-                            }
-                        },
-                        required: [
-                            "suggested_priority",
-                            "confidence_score",
-                            "analysis"
-                        ]
-                    }
-                }
-            }, { signal: controller.signal });
-        } finally {
-            clearTimeout(timeout);
-        }
-        console.timeEnd(`[AI Analysis] gemini-api`);
-
-        const aiResult = JSON.parse(aiResponse.output_text);
-
-        const validPriorities = [
-            "Low",
-            "Medium",
-            "High",
-            "Critical"
-        ];
-
-        if (!validPriorities.includes(aiResult.suggested_priority)) {
-            return res.status(500).json({
-                message: "AI returned an invalid priority"
-            });
-        }
-
-        if (
-            typeof aiResult.confidence_score !== "number" ||
-            aiResult.confidence_score < 0 ||
-            aiResult.confidence_score > 1
-        ) {
-            return res.status(500).json({
-                message: "AI returned an invalid confidence score"
-            });
-        }
-
-        const suggested_priority = aiResult.suggested_priority;
-        const confidence_score = aiResult.confidence_score;
-        const analysis = aiResult.analysis;
-
-        // Insert AI analysis without modifying tickets.priority
-        console.time(`[AI Analysis] db-write`);
-        const insertResult = await pool.query(
-            `INSERT INTO ai_analysis
-            (ticket_id, suggested_priority, confidence_score, analysis)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, ticket_id, suggested_priority, confidence_score, analysis, created_at`,
-            [ticketId, suggested_priority, confidence_score, analysis]
+        // ── Phase 2: Deduplication — check if a job is already in flight ───
+        const existingJobRes = await pool.query(
+            `SELECT id, status FROM ai_analysis_jobs
+             WHERE ticket_id=$1 AND content_hash=$2 AND status IN ('pending','running')
+             ORDER BY created_at DESC
+             LIMIT 1`,
+            [ticketId, contentHash]
         );
-        console.timeEnd(`[AI Analysis] db-write`);
 
-        console.timeEnd(totalLabel);
-        res.status(201).json({
-            message: "AI analysis created successfully",
-            analysis: insertResult.rows[0]
+        if (existingJobRes.rows.length > 0) {
+            const job = existingJobRes.rows[0];
+            console.log(`[AI Jobs] Duplicate request for ticket ${ticketId} — job ${job.id} already ${job.status}`);
+            return res.status(202).json({
+                message: "Analysis is already in progress",
+                cached: false,
+                job_id: job.id,
+                status: job.status,
+            });
+        }
+
+        // ── Phase 3: Create a new async job ────────────────────────────────
+        const jobRes = await pool.query(
+            `INSERT INTO ai_analysis_jobs (ticket_id, content_hash, status)
+             VALUES ($1, $2, 'pending')
+             RETURNING id, status, created_at`,
+            [ticketId, contentHash]
+        );
+        const newJob = jobRes.rows[0];
+        console.log(`[AI Jobs] Created job ${newJob.id} for ticket ${ticketId} (hash ${contentHash.slice(0, 8)}…)`);
+
+        return res.status(202).json({
+            message: "Analysis job submitted. Poll /api/tickets/:id/ai-analysis/jobs/:jobId for status.",
+            cached: false,
+            job_id: newJob.id,
+            status: newJob.status,
         });
 
     } catch (error) {
-        console.timeEnd(totalLabel);
-
-        // Distinguish timeout from other errors
-        if (error.name === "AbortError" || error.message?.toLowerCase().includes("abort")) {
-            console.error("[AI Analysis] Gemini API timed out after 30s");
-            return res.status(504).json({
-                message: "AI analysis timed out. The Gemini API is currently slow — please try again shortly."
-            });
-        }
-
-        console.error("[AI Analysis] Error:", error.message || error);
-
-        res.status(500).json({
-            message: "Internal server error"
-        });
+        console.error("[AI Analysis POST] Error:", error.message || error);
+        res.status(500).json({ message: "Internal server error" });
     }
 });
 
-// Get AI Analyses for a ticket
+// ─── GET /:id/ai-analysis ────────────────────────────────────────────────────
+// Returns all completed analyses for this ticket, newest first.
+// Includes content_hash and is_cached flag for the frontend to know if
+// results came from cache or a fresh Gemini call.
 router.get("/:id/ai-analysis", authenticateToken, async (req, res) => {
     try {
         const ticketId = req.params.id;
 
-        // Check if ticket exists — only need auth columns
-        const ticketResult = await pool.query(
-            "SELECT id, created_by, assigned_to FROM tickets WHERE id = $1",
-            [ticketId]
-        );
-
-        if (ticketResult.rows.length === 0) {
-            return res.status(404).json({
-                message: "Ticket not found"
-            });
+        const access = await checkTicketAccess(ticketId, req.user);
+        if (access.error) {
+            return res.status(access.error).json({ message: access.message });
         }
 
-        const ticket = ticketResult.rows[0];
-
-        // Check ticket access
-        if (
-            req.user.role === "User" &&
-            ticket.created_by !== req.user.id
-        ) {
-            return res.status(403).json({
-                message: "You are not authorized to view AI analysis for this ticket"
-            });
-        }
-
-        if (
-            req.user.role === "Agent" &&
-            ticket.assigned_to !== req.user.id
-        ) {
-            return res.status(403).json({
-                message: "You are not authorized to view AI analysis for this ticket"
-            });
-        }
-
-        if (
-            req.user.role !== "Admin" &&
-            req.user.role !== "Agent" &&
-            req.user.role !== "User"
-        ) {
-            return res.status(403).json({
-                message: "Access denied"
-            });
-        }
-
-        // Query all AI analyses for the ticket ordered by created_at DESC
         const analysisResult = await pool.query(
-            `SELECT id, ticket_id, suggested_priority, confidence_score, analysis, created_at
-            FROM ai_analysis
-            WHERE ticket_id = $1
-            ORDER BY created_at DESC`,
+            `SELECT id, ticket_id, suggested_priority, confidence_score, analysis,
+                    content_hash, is_cached, created_at
+             FROM ai_analysis
+             WHERE ticket_id=$1
+             ORDER BY created_at DESC`,
             [ticketId]
         );
 
         res.status(200).json({
             ticket_id: ticketId,
-            analyses: analysisResult.rows
+            analyses: analysisResult.rows,
         });
 
     } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            message: "Internal server error"
-        });
+        console.error("[AI Analysis GET] Error:", error.message || error);
+        res.status(500).json({ message: "Internal server error" });
     }
 });
 
-module.exports = router;
+// ─── GET /:id/ai-analysis/jobs/:jobId ────────────────────────────────────────
+// Frontend polls this endpoint to check if the background job is done.
+// Returns job status + analysis data when completed.
+router.get("/:id/ai-analysis/jobs/:jobId", authenticateToken, async (req, res) => {
+    try {
+        const ticketId = req.params.id;
+        const jobId    = req.params.jobId;
+
+        // Auth check (minimal — only need access columns)
+        const ticketRes = await pool.query(
+            "SELECT id, created_by, assigned_to FROM tickets WHERE id=$1",
+            [ticketId]
+        );
+        if (ticketRes.rows.length === 0) {
+            return res.status(404).json({ message: "Ticket not found" });
+        }
+        const ticket = ticketRes.rows[0];
+        if (req.user.role === "User" && ticket.created_by !== req.user.id) {
+            return res.status(403).json({ message: "You are not authorized to view this analysis" });
+        }
+        if (req.user.role === "Agent" && ticket.assigned_to !== req.user.id) {
+            return res.status(403).json({ message: "You are not authorized to view this analysis" });
+        }
+        if (!["Admin", "Agent", "User"].includes(req.user.role)) {
+            return res.status(403).json({ message: "Access denied" });
+        }
+
+        // Fetch the job
+        const jobRes = await pool.query(
+            `SELECT j.id, j.ticket_id, j.status, j.error_msg, j.created_at, j.started_at, j.completed_at,
+                    a.id          AS analysis_id,
+                    a.suggested_priority,
+                    a.confidence_score,
+                    a.analysis    AS analysis_text,
+                    a.content_hash,
+                    a.is_cached,
+                    a.created_at  AS analysis_created_at
+             FROM ai_analysis_jobs j
+             LEFT JOIN ai_analysis a ON a.id = j.analysis_id
+             WHERE j.id=$1 AND j.ticket_id=$2`,
+            [jobId, ticketId]
+        );
+
+        if (jobRes.rows.length === 0) {
+            return res.status(404).json({ message: "Job not found" });
+        }
+
+        const row = jobRes.rows[0];
+
+        // Build response shape based on job status
+        const response = {
+            job_id:     row.id,
+            ticket_id:  row.ticket_id,
+            status:     row.status,
+            created_at: row.created_at,
+        };
+
+        if (row.status === "completed" && row.analysis_id) {
+            response.analysis = {
+                id:                 row.analysis_id,
+                ticket_id:          row.ticket_id,
+                suggested_priority: row.suggested_priority,
+                confidence_score:   Number(row.confidence_score),
+                analysis:           row.analysis_text,
+                content_hash:       row.content_hash,
+                is_cached:          row.is_cached,
+                created_at:         row.analysis_created_at,
+            };
+        }
+
+        if (["failed", "timed_out"].includes(row.status)) {
+            response.error = row.error_msg || "Analysis failed";
+        }
+
+        return res.status(200).json(response);
+
+    } catch (error) {
+        console.error("[AI Job Status] Error:", error.message || error);
+        res.status(500).json({ message: "Internal server error" });
+    }
+});
+
+module.exports = router;

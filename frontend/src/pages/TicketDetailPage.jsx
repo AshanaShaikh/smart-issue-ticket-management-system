@@ -62,6 +62,19 @@ function formatDateTime(dateString) {
   }
 }
 
+async function computeContentHash(title, description, category) {
+  try {
+    const raw = `${title || ""}::${description || ""}::${category || ""}`;
+    const encoder = new TextEncoder();
+    const data = encoder.encode(raw);
+    const hashBuffer = await window.crypto.subtle.digest("SHA-256", data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map((b) => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    return null;
+  }
+}
+
 // ─── Small reusable SVG icons ───────────────────────────────────────────────
 
 function IconBack() {
@@ -191,6 +204,28 @@ function TicketDetailPage() {
   const [analysesError, setAnalysesError] = useState("");
   const [runningAnalysis, setRunningAnalysis] = useState(false);
   const [runAnalysisError, setRunAnalysisError] = useState("");
+  const [activeJobId, setActiveJobId] = useState(null);
+  const [analysisStatusText, setAnalysisStatusText] = useState("");
+  const [lastAnalysisNotice, setLastAnalysisNotice] = useState(null); // { type: 'cached' | 'fresh', message: string }
+  const [currentContentHash, setCurrentContentHash] = useState(null);
+
+  // Recompute ticket content hash whenever ticket title, description, or category changes
+  useEffect(() => {
+    let active = true;
+    Promise.resolve().then(() => {
+      if (!active) return;
+      if (ticket) {
+        return computeContentHash(ticket.title, ticket.description, ticket.category);
+      }
+      return null;
+    }).then((hash) => {
+      if (active) setCurrentContentHash(hash || null);
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [ticket]);
 
   // Active tab
   const [activeTab, setActiveTab] = useState("comments");
@@ -304,6 +339,73 @@ function TicketDetailPage() {
     }
   }, [id]);
 
+  // Polling effect for active background AI analysis job
+  useEffect(() => {
+    if (!activeJobId) return;
+
+    let isMounted = true;
+    let pollTimer = null;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // 30 * 2000ms = 60s max polling time
+
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const res = await ticketService.pollAiJob(id, activeJobId);
+        if (!isMounted) return;
+
+        if (res.status === "completed") {
+          setActiveJobId(null);
+          setRunningAnalysis(false);
+          setAnalysisStatusText("");
+          setLastAnalysisNotice({
+            type: "fresh",
+            message: "Fresh AI priority analysis generated successfully.",
+          });
+          fetchAnalyses(true);
+          return;
+        }
+
+        if (res.status === "failed" || res.status === "timed_out") {
+          setActiveJobId(null);
+          setRunningAnalysis(false);
+          setAnalysisStatusText("");
+          setRunAnalysisError(res.error || "AI analysis failed. Please try again.");
+          return;
+        }
+
+        // Job still pending or running
+        if (attempts >= MAX_ATTEMPTS) {
+          setActiveJobId(null);
+          setRunningAnalysis(false);
+          setAnalysisStatusText("");
+          setRunAnalysisError("Analysis request timed out. Please click Retry.");
+          return;
+        }
+
+        setAnalysisStatusText(
+          res.status === "running"
+            ? "Gemini is analyzing ticket content in background…"
+            : "Analysis job queued, waiting for worker…"
+        );
+        pollTimer = setTimeout(poll, 2000);
+      } catch (err) {
+        if (!isMounted) return;
+        setActiveJobId(null);
+        setRunningAnalysis(false);
+        setAnalysisStatusText("");
+        setRunAnalysisError(err.message || "Failed to check analysis job status. Please retry.");
+      }
+    };
+
+    poll();
+
+    return () => {
+      isMounted = false;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [activeJobId, id, fetchAnalyses]);
+
   // Handlers
   const handleStatusChange = async (newStatus) => {
     if (!newStatus || newStatus === ticket?.status) return;
@@ -320,15 +422,24 @@ function TicketDetailPage() {
     }
   };
 
+  const [applyPriorityError, setApplyPriorityError] = useState("");
+
   const handleApplySuggestedPriority = async (suggestedPriority) => {
-    if (!suggestedPriority || suggestedPriority === ticket?.priority) return;
+    if (!suggestedPriority || suggestedPriority === ticket?.priority || applyingPriority) return;
     setApplyingPriority(true);
+    setApplyPriorityError("");
     try {
       const updated = await ticketService.update(id, { priority: suggestedPriority });
-      setTicket(updated.ticket || { ...ticket, priority: suggestedPriority });
+      if (updated.ticket) {
+        setTicket(updated.ticket);
+      } else {
+        // Fallback: reload full ticket details
+        const refreshed = await ticketService.getById(id);
+        if (refreshed.ticket) setTicket(refreshed.ticket);
+      }
       fetchHistory(true);
     } catch (err) {
-      alert(err.message || "Failed to update priority.");
+      setApplyPriorityError(err.message || "Failed to update priority.");
     } finally {
       setApplyingPriority(false);
     }
@@ -397,15 +508,42 @@ function TicketDetailPage() {
   };
 
   const handleRunAiAnalysis = async () => {
+    if (runningAnalysis) return; // Prevent duplicate job submissions
     setRunningAnalysis(true);
     setRunAnalysisError("");
+    setLastAnalysisNotice(null);
+    setAnalysisStatusText("Submitting analysis request…");
+
     try {
-      await ticketService.runAiAnalysis(id);
-      fetchAnalyses(true);
+      const res = await ticketService.submitAiAnalysis(id);
+
+      if (res.cached && res.analysis) {
+        // Cache hit: immediately show cached recommendation without polling!
+        setRunningAnalysis(false);
+        setAnalysisStatusText("");
+        setLastAnalysisNotice({
+          type: "cached",
+          message: "Loaded from cache (ticket content unchanged). Instant response.",
+        });
+        fetchAnalyses(true);
+      } else if (res.job_id) {
+        // Async background job submitted or already in flight
+        setAnalysisStatusText(
+          res.status === "running"
+            ? "Gemini analysis is in progress…"
+            : "Analysis job queued in background…"
+        );
+        setActiveJobId(res.job_id);
+      } else {
+        // Fallback refresh
+        setRunningAnalysis(false);
+        setAnalysisStatusText("");
+        fetchAnalyses(true);
+      }
     } catch (err) {
-      setRunAnalysisError(err.message || "AI analysis failed. Please try again.");
-    } finally {
       setRunningAnalysis(false);
+      setAnalysisStatusText("");
+      setRunAnalysisError(err.message || "AI analysis failed. Please try again.");
     }
   };
 
@@ -829,13 +967,52 @@ function TicketDetailPage() {
                   onClick={handleRunAiAnalysis}
                   disabled={runningAnalysis}
                 >
-                  {runningAnalysis ? <><IconSpinner />Analyzing&#8230;</> : <><IconAI />Run Analysis</>}
+                  {runningAnalysis ? <><IconSpinner />Analyzing&#8230;</> : <><IconAI />{runAnalysisError ? "Retry Analysis" : "Run Analysis"}</>}
                 </button>
               </div>
 
+              {/* Progress banner when job is in flight */}
+              {runningAnalysis && (
+                <div className="td-ai-progress-banner" role="status" aria-live="polite">
+                  <IconSpinner />
+                  <div className="td-ai-progress-text">
+                    <strong>AI Analysis In Progress</strong>
+                    <p>{analysisStatusText || "Analyzing ticket content in the background…"}</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Notice when analysis completed or loaded from cache */}
+              {!runningAnalysis && lastAnalysisNotice && (
+                <div
+                  className={`alert ${lastAnalysisNotice.type === "cached" ? "alert-info" : "alert-success"}`}
+                  role="status"
+                  style={{ marginBottom: "1rem" }}
+                >
+                  <IconCheck />
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                    <span>{lastAnalysisNotice.message}</span>
+                    {lastAnalysisNotice.type === "cached" && (
+                      <span className="badge-cached-pill">Instant Cache Hit</span>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {runAnalysisError && (
                 <div className="alert alert-error" role="alert" style={{ marginBottom: "1rem" }}>
-                  <IconError /><div>{runAnalysisError}</div>
+                  <IconError />
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", width: "100%", gap: "1rem", flexWrap: "wrap" }}>
+                    <span>{runAnalysisError}</span>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline"
+                      style={{ borderColor: "var(--rose-300)", color: "var(--rose-700)" }}
+                      onClick={handleRunAiAnalysis}
+                    >
+                      Retry Now
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -845,7 +1022,7 @@ function TicketDetailPage() {
               {!analysesLoading && analysesError && (
                 <div className="alert alert-error" role="alert"><IconError /><div>{analysesError}</div></div>
               )}
-              {!analysesLoading && !analysesError && analyses.length === 0 && (
+              {!analysesLoading && !analysesError && analyses.length === 0 && !runningAnalysis && (
                 <div className="td-empty-panel">
                   <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <rect x="3" y="11" width="18" height="11" rx="2" />
@@ -859,7 +1036,18 @@ function TicketDetailPage() {
                 <div className="td-analyses-list">
                   {analyses.map((a, idx) => (
                     <div key={a.id} className={`td-analysis-card${idx === 0 ? " td-analysis-latest" : ""}`}>
-                      {idx === 0 && <span className="td-analysis-badge-latest">Latest</span>}
+                      <div className="td-analysis-top-badges">
+                        {idx === 0 && <span className="td-analysis-badge-latest">Latest</span>}
+                        {a.is_cached ? (
+                          <span className="td-analysis-badge-cached" title="Served from content-hash cache">
+                            Cached
+                          </span>
+                        ) : (
+                          <span className="td-analysis-badge-fresh" title="Generated fresh from Gemini API">
+                            Fresh
+                          </span>
+                        )}
+                      </div>
                       <div className="td-analysis-header">
                         <div className="td-analysis-priority-block">
                           <span className="td-analysis-priority-label">Suggested Priority</span>
@@ -896,15 +1084,60 @@ function TicketDetailPage() {
                             </svg>
                             This is an AI recommendation. The actual ticket priority has not been changed.
                           </div>
-                          {user?.role === "Admin" && a.suggested_priority && a.suggested_priority !== ticket.priority && (
-                            <button
-                              type="button"
-                              className="btn btn-outline btn-sm"
-                              onClick={() => handleApplySuggestedPriority(a.suggested_priority)}
-                              disabled={applyingPriority}
-                            >
-                              {applyingPriority ? <><IconSpinner />Applying&#8230;</> : `Apply "${a.suggested_priority}" Priority`}
-                            </button>
+
+                          {/* Admin Apply Priority Workflow */}
+                          {user?.role === "Admin" && !runningAnalysis && a.suggested_priority && (
+                            <div className="td-analysis-actions">
+                              {/* If ticket content changed since this analysis was generated, recommendation is outdated */}
+                              {currentContentHash && a.content_hash && currentContentHash !== a.content_hash ? (
+                                <span className="td-analysis-outdated-badge" title="Ticket content changed since this analysis was created. Click 'Run Analysis' for a fresh recommendation.">
+                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                    <circle cx="12" cy="12" r="10" />
+                                    <line x1="12" y1="8" x2="12" y2="12" />
+                                    <line x1="12" y1="16" x2="12.01" y2="16" />
+                                  </svg>
+                                  Content Modified — Recommendation Outdated
+                                </span>
+                              ) : ticket?.priority === a.suggested_priority ? (
+                                /* Status indicator when ticket priority matches AI recommendation */
+                                <span className="td-priority-applied-badge">
+                                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                                    <polyline points="20 6 9 17 4 12" />
+                                  </svg>
+                                  Priority Applied: {a.suggested_priority}
+                                </span>
+                              ) : (
+                                /* Action button to apply suggested priority */
+                                <button
+                                  id="apply-ai-priority-btn"
+                                  type="button"
+                                  className="btn btn-outline btn-sm td-apply-priority-btn"
+                                  onClick={() => handleApplySuggestedPriority(a.suggested_priority)}
+                                  disabled={applyingPriority}
+                                >
+                                  {applyingPriority ? (
+                                    <>
+                                      <IconSpinner />
+                                      Applying Priority&#8230;
+                                    </>
+                                  ) : (
+                                    <>
+                                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                        <polyline points="20 6 9 17 4 12" />
+                                      </svg>
+                                      Apply Priority: {a.suggested_priority}
+                                    </>
+                                  )}
+                                </button>
+                              )}
+                            </div>
+                          )}
+
+                          {applyPriorityError && (
+                            <div className="alert alert-error" role="alert" style={{ width: "100%", marginTop: "0.5rem" }}>
+                              <IconError />
+                              <div>{applyPriorityError}</div>
+                            </div>
                           )}
                         </div>
                       )}
